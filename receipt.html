@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>收據</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.38/dist/vue.global.prod.js"></script>
+<style>
+  [v-cloak] { display: none; }
+  @page { size: A4; margin: 12mm; }
+  @media print {
+    body { background: #fff !important; }
+    .no-print { display: none !important; }
+    .sheet { box-shadow: none !important; max-width: none !important; margin: 0 !important; }
+  }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+<div id="app" v-cloak></div>
+
+<script type="module">
+import { CONFIG } from './config.js';
+
+const { createApp, ref, computed, onMounted } = Vue;
+
+const TYPE = { deposit: '訂金', milestone: '期中款', final: '尾款', extra: '追加款' };
+const METHOD = { cash: '現金', transfer: '匯款', check: '支票', other: '其他' };
+
+// 阿拉伯數字 → 中文大寫金額（例：15000 → 新台幣壹萬伍仟元整）
+function toChineseAmount(value) {
+  const num = Math.round(Number(value));
+  if (!num || num < 0) return '新台幣零元整';
+  const D = '零壹貳參肆伍陸柒捌玖';
+  const U = ['', '拾', '佰', '仟'];
+  const BIG = ['', '萬', '億', '兆'];
+  const groups = [];
+  for (let n = num; n > 0; n = Math.floor(n / 10000)) groups.push(n % 10000);
+
+  let out = '';
+  let zeroGroup = false;
+  for (let g = groups.length - 1; g >= 0; g--) {
+    const v = groups[g];
+    if (v === 0) { zeroGroup = out !== ''; continue; }
+    const digits = [Math.floor(v / 1000) % 10, Math.floor(v / 100) % 10, Math.floor(v / 10) % 10, v % 10];
+    let part = '';
+    let z = false;
+    digits.forEach((d, i) => {
+      if (d === 0) { z = part !== ''; return; }
+      if (z) { part += '零'; z = false; }
+      part += D[d] + U[3 - i];
+    });
+    if (out !== '' && (zeroGroup || v < 1000)) out += '零';
+    out += part + BIG[g];
+    zeroGroup = false;
+  }
+  return '新台幣' + out + '元整';
+}
+
+createApp({
+  setup() {
+    const r = ref(null);
+    const error = ref('');
+
+    const n = (x) => (x === null || x === undefined ? '' : Number(x).toLocaleString('zh-TW'));
+    const ymd = (s) => (s ? String(s).replace(/-/g, '/') : '');
+
+    onMounted(async () => {
+      try {
+        const id = new URLSearchParams(location.search).get('p');
+        const t = localStorage.getItem('quote_token');
+        if (!id) throw new Error('連結不完整');
+        if (!t) throw new Error('請先在報價系統登入，再開啟收據');
+        const res = await fetch(`${CONFIG.API_BASE}/api/payments/${encodeURIComponent(id)}/receipt`, {
+          headers: { Authorization: 'Bearer ' + t },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '無法開啟收據');
+        r.value = data;
+        document.title = `${data.receipt_no} 收據 ${data.customer.name}`; // 另存 PDF 時的預設檔名
+      } catch (e) { error.value = e.message; }
+    });
+
+    const company = computed(() => (r.value && r.value.company) || {});
+    return { r, error, company, n, ymd, TYPE, METHOD, chinese: toChineseAmount };
+  },
+  template: `
+  <div v-if="error" class="max-w-xl mx-auto mt-24 px-4 text-center text-gray-600">{{ error }}</div>
+
+  <div v-else-if="r" class="py-3 md:py-8">
+    <div class="no-print max-w-[210mm] mx-auto px-3 mb-3 flex items-center justify-between gap-2">
+      <div class="text-sm text-gray-500">{{ r.receipt_no }}</div>
+      <button class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm" onclick="window.print()">列印 / 另存 PDF</button>
+    </div>
+
+    <div class="sheet relative overflow-hidden bg-white shadow max-w-[210mm] mx-auto p-5 md:p-[14mm] text-[14px] leading-relaxed border border-gray-200">
+
+      <!-- 作廢浮水印 -->
+      <div v-if="r.voided" class="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <div class="text-red-500/30 font-bold border-8 border-red-500/30 rounded-xl px-8 py-2 text-7xl md:text-8xl -rotate-12">已作廢</div>
+      </div>
+
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="min-w-0">
+          <div class="text-xl font-bold">{{ company.name || '（尚未設定公司抬頭）' }}</div>
+          <div v-if="company.tax_id" class="text-gray-600">統一編號：{{ company.tax_id }}</div>
+          <div v-if="company.address" class="text-gray-600">{{ company.address }}</div>
+          <div v-if="company.phone" class="text-gray-600">電話：{{ company.phone }}</div>
+        </div>
+        <div class="text-right">
+          <div class="text-3xl font-bold tracking-[0.5em]">收　據</div>
+          <div class="font-mono mt-1">No. {{ r.receipt_no }}</div>
+          <div class="text-gray-600">收款日期：{{ ymd(r.paid_at) }}</div>
+        </div>
+      </div>
+
+      <div v-if="r.voided" class="mt-3 bg-red-50 text-red-700 rounded-lg px-3 py-2 text-sm">
+        此收據已作廢<span v-if="r.void_reason">：{{ r.void_reason }}</span>。作廢後不計入已收金額。
+      </div>
+
+      <table class="w-full border-collapse mt-5">
+        <tr>
+          <td class="border px-3 py-2 w-28 bg-gray-50 text-gray-600">茲收到</td>
+          <td class="border px-3 py-2 font-medium">{{ r.customer.name }}<span v-if="r.customer.tax_id" class="text-gray-500 font-normal">（統編 {{ r.customer.tax_id }}）</span></td>
+        </tr>
+        <tr>
+          <td class="border px-3 py-2 bg-gray-50 text-gray-600">案件</td>
+          <td class="border px-3 py-2">{{ r.project.name }}<span class="text-gray-500">　{{ r.project.project_no }}</span>
+            <span v-if="r.quote_no" class="text-gray-500">　報價 {{ r.quote_no }}</span></td>
+        </tr>
+        <tr>
+          <td class="border px-3 py-2 bg-gray-50 text-gray-600">款項</td>
+          <td class="border px-3 py-2">{{ TYPE[r.type] }}</td>
+        </tr>
+        <tr>
+          <td class="border px-3 py-2 bg-gray-50 text-gray-600">金額</td>
+          <td class="border px-3 py-2">
+            <div class="text-2xl font-bold">NT$ {{ n(r.amount) }}</div>
+            <div class="text-gray-700 mt-1">{{ chinese(r.amount) }}</div>
+          </td>
+        </tr>
+        <tr>
+          <td class="border px-3 py-2 bg-gray-50 text-gray-600">付款方式</td>
+          <td class="border px-3 py-2">{{ METHOD[r.method] }}</td>
+        </tr>
+        <tr v-if="r.note">
+          <td class="border px-3 py-2 bg-gray-50 text-gray-600">備註</td>
+          <td class="border px-3 py-2 whitespace-pre-line">{{ r.note }}</td>
+        </tr>
+      </table>
+
+      <!-- 累計 -->
+      <div v-if="r.project_total !== null" class="mt-4 flex justify-end">
+        <table class="text-[13px] w-full md:w-80">
+          <tr><td class="px-2 py-0.5 text-gray-600">採用報價總額</td><td class="px-2 py-0.5 text-right">{{ n(r.project_total) }}</td></tr>
+          <tr><td class="px-2 py-0.5 text-gray-600">累計已收（含本次）</td><td class="px-2 py-0.5 text-right">{{ n(r.paid_after) }}</td></tr>
+          <tr class="border-t font-medium"><td class="px-2 py-1">未收餘額</td><td class="px-2 py-1 text-right">{{ n(Math.max(r.outstanding_after, 0)) }}</td></tr>
+        </table>
+      </div>
+      <p v-else class="mt-4 text-xs text-gray-500 text-right">累計已收（含本次）：{{ n(r.paid_after) }}</p>
+
+      <div class="grid grid-cols-2 gap-6 mt-10">
+        <div>
+          <div class="text-gray-500 mb-1">收款單位（印章）</div>
+          <div class="h-24 border-b flex items-end">
+            <img v-if="company.stamp" :src="company.stamp" class="max-h-24 object-contain" alt="">
+          </div>
+          <div v-if="company.owner" class="text-gray-600 mt-1">負責人：{{ company.owner }}</div>
+        </div>
+        <div>
+          <div class="text-gray-500 mb-1">經手人</div>
+          <div class="h-24 border-b flex items-end pb-1">{{ r.issuer }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  `,
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>報價單</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.38/dist/vue.global.prod.js"></script>
+<style>
+  [v-cloak] { display: none; }
+  @page { size: A4; margin: 12mm; }
+  @media print {
+    body { background: #fff !important; }
+    .no-print { display: none !important; }
+    .sheet { box-shadow: none !important; padding: 0 !important; max-width: none !important; margin: 0 !important; }
+    thead { display: table-header-group; }
+    tr, .keep { break-inside: avoid; }
+  }
+</style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+<div id="app" v-cloak></div>
+
+<script type="module">
+import { CONFIG } from './config.js';
+
+const { createApp, ref, computed, onMounted } = Vue;
+
+// 網址：?t=分享連結 token（公開）；?q=報價單編號（內部預覽，需要先在系統登入過）
+const params = new URLSearchParams(location.search);
+const token = params.get('t');
+const quoteId = params.get('q');
+
+const CAT = { equipment: '設備', labor: '安裝工資' };
+
+createApp({
+  setup() {
+    const v = ref(null);
+    const error = ref('');
+
+    const n = (x) => (x === null || x === undefined || x === '' ? '' : Number(x).toLocaleString('zh-TW'));
+    const dt = (s) => (s ? new Date(String(s).replace(' ', 'T') + 'Z').toLocaleDateString('zh-TW') : '');
+    const ymd = (s) => (s ? String(s).replace(/-/g, '/') : '');
+
+    onMounted(async () => {
+      try {
+        let res;
+        if (token) {
+          res = await fetch(`${CONFIG.API_BASE}/api/share/${encodeURIComponent(token)}`);
+        } else if (quoteId) {
+          const t = localStorage.getItem('quote_token');
+          if (!t) throw new Error('請先在報價系統登入，再開啟預覽');
+          res = await fetch(`${CONFIG.API_BASE}/api/quotes/${encodeURIComponent(quoteId)}/customer-view`, {
+            headers: { Authorization: 'Bearer ' + t },
+          });
+        } else {
+          throw new Error('連結不完整');
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '無法開啟報價單');
+        v.value = data;
+        document.title = `${data.quote_no} 報價單 ${data.customer.name}`; // 另存 PDF 時的預設檔名
+      } catch (e) {
+        error.value = e.message;
+      }
+    });
+
+    // 依分類整理明細（沒有項目的分類不顯示）
+    const sections = computed(() => {
+      if (!v.value) return [];
+      const t = v.value.totals;
+      return [
+        { key: 'equipment', label: CAT.equipment, sum: t.subtotal_equipment },
+        { key: 'labor', label: CAT.labor, sum: t.subtotal_labor },
+      ]
+        .map((s) => ({ ...s, items: v.value.items.filter((i) => i.category === s.key) }))
+        .filter((s) => s.items.length);
+    });
+
+    const company = computed(() => (v.value && v.value.company) || {});
+    const hasBank = computed(() => company.value.bank_name || company.value.bank_account);
+
+    return { v, error, sections, company, hasBank, n, dt, ymd, mode: token ? 'public' : 'internal' };
+  },
+  template: `
+  <div v-if="error" class="max-w-xl mx-auto mt-24 px-4 text-center text-gray-600">{{ error }}</div>
+
+  <div v-else-if="v" class="py-3 md:py-8">
+    <div class="no-print max-w-[210mm] mx-auto px-3 mb-3 flex items-center justify-between gap-2">
+      <div class="text-sm text-gray-500"><span v-if="mode === 'internal'">內部預覽 · </span>{{ v.quote_no }}</div>
+      <button class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm" onclick="window.print()">列印 / 另存 PDF</button>
+    </div>
+    <div v-if="v.status === 'draft'" class="no-print max-w-[210mm] mx-auto mb-3 px-3">
+      <div class="bg-amber-100 text-amber-800 text-sm rounded-lg px-3 py-2">草稿預覽：尚未送出，內容還可能更動，客戶目前看不到這份。</div></div>
+    <div v-if="v.status === 'void'" class="max-w-[210mm] mx-auto mb-3 px-3">
+      <div class="bg-red-100 text-red-700 text-sm rounded-lg px-3 py-2 font-medium">此報價單已作廢，僅供參考，請以最新版本為準。</div></div>
+
+    <div class="sheet bg-white shadow max-w-[210mm] mx-auto p-4 md:p-[12mm] text-[13px] leading-relaxed">
+
+      <!-- 抬頭 -->
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="min-w-0">
+          <div class="text-xl font-bold">{{ company.name || '（尚未設定公司抬頭）' }}</div>
+          <div v-if="company.tax_id" class="text-gray-600">統一編號：{{ company.tax_id }}</div>
+          <div v-if="company.address" class="text-gray-600">{{ company.address }}</div>
+          <div v-if="company.phone || company.email" class="text-gray-600">
+            <span v-if="company.phone">電話：{{ company.phone }}</span>
+            <span v-if="company.phone && company.email">　</span>
+            <span v-if="company.email">{{ company.email }}</span>
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="text-2xl font-bold tracking-widest">報 價 單</div>
+          <div class="font-mono mt-1">{{ v.quote_no }}</div>
+          <div class="text-gray-600">報價日期：{{ dt(v.sent_at || v.created_at) }}</div>
+          <div v-if="v.valid_until" class="text-gray-600">有效期限：{{ ymd(v.valid_until) }}</div>
+        </div>
+      </div>
+
+      <!-- 客戶與案件 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 border-y mt-4 py-2">
+        <div><span class="text-gray-500">客戶：</span>{{ v.customer.name }}</div>
+        <div v-if="v.customer.contact || v.customer.phone"><span class="text-gray-500">聯絡人：</span>{{ v.customer.contact }} {{ v.customer.phone }}</div>
+        <div><span class="text-gray-500">案件：</span>{{ v.project.name }}</div>
+        <div v-if="v.project.site_address"><span class="text-gray-500">施工地址：</span>{{ v.project.site_address }}</div>
+        <div v-if="v.customer.tax_id"><span class="text-gray-500">統編：</span>{{ v.customer.tax_id }}</div>
+      </div>
+
+      <!-- 明細 -->
+      <div class="overflow-x-auto mt-4">
+        <table class="w-full border-collapse text-[12px] min-w-[560px]">
+          <thead>
+            <tr class="bg-gray-100">
+              <th class="border px-2 py-1 text-left w-20">類別</th>
+              <th class="border px-2 py-1 text-left">品名 / 規格</th>
+              <th class="border px-2 py-1 text-right w-16">數量</th>
+              <th class="border px-2 py-1 text-right w-20">單價</th>
+              <th class="border px-2 py-1 text-right w-24">金額</th>
+              <th class="border px-2 py-1 text-left w-24">備註</th>
+            </tr>
+          </thead>
+          <template v-for="sec in sections" :key="sec.key">
+            <tbody>
+              <tr class="bg-gray-50"><td colspan="6" class="border px-2 py-1 font-bold">{{ sec.label }}</td></tr>
+              <tr v-for="(it, i) in sec.items" :key="i" class="align-top">
+                <td class="border px-2 py-1">{{ it.subcategory }}</td>
+                <td class="border px-2 py-1">
+                  <div class="font-medium">{{ it.name }}</div>
+                  <div v-if="it.spec" class="whitespace-pre-line text-gray-600">{{ it.spec }}</div>
+                </td>
+                <td class="border px-2 py-1 text-right whitespace-nowrap">{{ Number(it.qty) }} {{ it.unit }}</td>
+                <td class="border px-2 py-1 text-right">{{ n(it.unit_price) }}</td>
+                <td class="border px-2 py-1 text-right">{{ n(it.amount) }}</td>
+                <td class="border px-2 py-1 whitespace-pre-line">{{ it.note }}</td>
+              </tr>
+              <tr>
+                <td colspan="4" class="border px-2 py-1 text-right text-gray-600">{{ sec.label }}小計</td>
+                <td class="border px-2 py-1 text-right font-medium">{{ n(sec.sum) }}</td>
+                <td class="border"></td>
+              </tr>
+            </tbody>
+          </template>
+        </table>
+      </div>
+
+      <!-- 合計 -->
+      <div class="keep flex justify-end mt-3">
+        <table class="text-[13px] w-full md:w-72">
+          <tr><td class="px-2 py-0.5 text-gray-600">明細小計</td><td class="px-2 py-0.5 text-right">{{ n(v.totals.subtotal) }}</td></tr>
+          <tr v-if="v.show_discount_line && v.totals.discount_amount > 0">
+            <td class="px-2 py-0.5 text-gray-600">優惠折讓</td><td class="px-2 py-0.5 text-right">−{{ n(v.totals.discount_amount) }}</td></tr>
+          <tr><td class="px-2 py-0.5 text-gray-600">未稅金額</td><td class="px-2 py-0.5 text-right">{{ n(v.totals.net_amount) }}</td></tr>
+          <tr v-if="v.invoice_flag"><td class="px-2 py-0.5 text-gray-600">營業稅 5%</td><td class="px-2 py-0.5 text-right">{{ n(v.totals.tax_amount) }}</td></tr>
+          <tr class="border-t-2 border-gray-800 text-base font-bold">
+            <td class="px-2 py-1">{{ v.invoice_flag ? '含稅總計' : '總計（未稅）' }}</td>
+            <td class="px-2 py-1 text-right">NT$ {{ n(v.totals.total_amount) }}</td></tr>
+        </table>
+      </div>
+      <p v-if="!v.invoice_flag" class="keep text-right text-xs text-gray-500 mt-1">本報價為未稅價格，如需開立發票，另加 5% 營業稅。</p>
+
+      <!-- 條款 -->
+      <div v-if="v.terms" class="keep mt-5">
+        <div class="font-bold mb-1">說明事項</div>
+        <div class="whitespace-pre-line text-gray-700">{{ v.terms }}</div>
+      </div>
+
+      <!-- 匯款資訊 -->
+      <div v-if="hasBank" class="keep mt-4">
+        <div class="font-bold mb-1">匯款資訊</div>
+        <div class="text-gray-700">
+          {{ company.bank_name }} {{ company.bank_branch }}<br>
+          帳號：{{ company.bank_account }}<br>
+          <span v-if="company.bank_holder">戶名：{{ company.bank_holder }}</span>
+        </div>
+      </div>
+
+      <!-- 簽認 -->
+      <div class="keep grid grid-cols-2 gap-6 mt-8">
+        <div>
+          <div class="text-gray-500 mb-1">報價單位（印章）</div>
+          <div class="h-24 border-b flex items-end">
+            <img v-if="company.stamp" :src="company.stamp" class="max-h-24 object-contain" alt="">
+          </div>
+          <div v-if="company.owner" class="text-gray-600 mt-1">負責人：{{ company.owner }}</div>
+        </div>
+        <div>
+          <div class="text-gray-500 mb-1">客戶簽認</div>
+          <div class="h-24 border-b"></div>
+          <div class="text-gray-600 mt-1">日期：</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  `,
+}).mount('#app');
+</script>
+</body>
+</html>
